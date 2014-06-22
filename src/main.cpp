@@ -9,7 +9,7 @@
 int main(int argc, char **argv)
 {
   // Activate the program of locating a colored object
-  int exit_code = LocateColoredObject();
+  int exit_code = LocateColoredObject(argc, argv);
 
   // Program exit
   return exit_code;
