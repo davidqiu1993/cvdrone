@@ -1,5 +1,5 @@
 #include "ardrone/ardrone.h"
-#include "functionalities/functionalities.h"
+#include "functionalities/LocateColoredObject.hpp"
 
 // --------------------------------------------------------------------------
 // main(Number of arguments, Argument values)

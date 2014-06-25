@@ -1,11 +1,41 @@
-#include "functionalities.h"
+/**
+* D.D. Selector stands for "David's Diffuse Selector", or the full
+* name as "David's Gradient Diffuse Color Block Selector". It is a
+* method managing to select human-recognized color block in a image
+* or a video frame, with affection of shadow in limited gradient
+* threshold.
+*
+* This color block detection method can detect a single color block
+* applying the D.D. Selector.
+*
+* The author, David Qiu, designs this method and implements it in
+* OpenCV. The author remains all rights of the methods, algorithms,
+* and code. One can only access to the code for study purpose.
+* Commercial use or releasement related to the methods, algorithms,
+* or code is NOT allowed.
+*
+* Creative Commons: BY-NC-ND
+*
+* Author:  David Qiu (david@davidqiu.com)
+* Website: http://www.davidqiu.com/
+*/
+
+#ifndef _LOCATE_COLORED_OBJECT_HPP_
+#define _LOCATE_COLORED_OBJECT_HPP_
+
+#include "../ardrone/ardrone.h"
+#include <cstdio>
+#include <cstdlib>
+#include <ctime>
+#include <queue>
+using namespace std;
 
 void _ProcessImage(IplImage** ptrImage);
-bool _FindColoredObject(IplImage* image, int color_r, int color_g, int color_b, int error, int* delta_px, int* delta_py);
+bool _FindColoredObject(IplImage* image, int* channelValues, int colorThreshold, int gradientThreshold, int* delta_px, int* delta_py);
 void _MedianFilter(IplImage** ptrImage);
 void _MedianFilter_OpenCV(IplImage** ptrImage);
-void _GradientDiffuseAndEqualize(IplImage** ptrImage, int threshold);
 void _CheckNeighbourPixels(IplImage* image, int* pixelGroup, int currentGroup, int currentPixel, queue<int>& toCheck, int threshold);
+void _DrawCrosshair(IplImage* image, int x, int y, int size, int* color);
 
 
 /**
@@ -23,6 +53,12 @@ int LocateColoredObject(int argc, char **argv)
 
   ARDrone ardrone; // AR.Drone entity
   IplImage *image = NULL; // Image obtain from the AR.Drone
+  IplImage *image_process = NULL; // Image to process
+
+  float scale = 0.5;
+  int expectedColor[3] = { 50, 10, 0 };
+  int crosshairColor[3] = { 0, 0, 255 };
+  int crosshairSize = 11;
 
   double vx, vy, vz, vr; // Expected movement speed vector
   int delta_px, delta_py; // Error vector of the colored object on bottom image
@@ -43,7 +79,7 @@ int LocateColoredObject(int argc, char **argv)
 
   // Switch to the buttom camera
   ardrone.setCamera(1);
-
+  
   // Instructions
   printf("***************************************\n");
   printf("*       CV Drone sample program       *\n");
@@ -77,12 +113,19 @@ int LocateColoredObject(int argc, char **argv)
     // Get an new image
     if (image != NULL) cvReleaseImage(&image);
     image = cvCloneImage(ardrone.getImage());
-    
+    if (image_process != NULL) cvReleaseImage(&image_process);
+    image_process = cvCreateImage(cvSize(image->width*scale, image->height*scale), image->depth, image->nChannels);
+    cvResize(image, image_process, CV_INTER_NN);
+
     // Preprocess the image
-    _ProcessImage(&image);
+    _ProcessImage(&image_process);
 
     // Find the colored object
-    _FindColoredObject(image, 255, 0, 0, 10, &delta_px, &delta_py);
+    if (_FindColoredObject(image_process, expectedColor, 10, 5, &delta_px, &delta_py))
+    {
+      printf("Block at (%d, %d)\n", delta_px, delta_py);
+      _DrawCrosshair(image_process, delta_px + image_process->width / 2, delta_py + image_process->height / 2, crosshairSize, crosshairColor);
+    }
 
     // Accumulate the position vector
     ardrone.getVelocity(&vel_x, &vel_y, &vel_z);
@@ -93,7 +136,7 @@ int LocateColoredObject(int argc, char **argv)
     tick_time0 = tick_time1;
 
     // Print the position information of the drone
-    printf("pos = (%lf, %lf, %lf)\n", pos_x, pos_y, pos_z);
+    //printf("pos = (%lf, %lf, %lf)\n", pos_x, pos_y, pos_z);
 
     // Take off / Landing 
     if (key == ' ') {
@@ -121,7 +164,7 @@ int LocateColoredObject(int argc, char **argv)
     }
 
     // Display the image
-    cvShowImage("camera", image);
+    cvShowImage("camera", image_process);
   }
 
   // See you
@@ -143,22 +186,20 @@ int LocateColoredObject(int argc, char **argv)
 void _ProcessImage(IplImage** ptrImage)
 {
   // Remove the noise from the image
-  for (int i = 0; i < 3; ++i) _MedianFilter_OpenCV(ptrImage);
   //_MedianFilter(ptrImage);
-
-  // Gradient diffuse and equalize
-  _GradientDiffuseAndEqualize(ptrImage, 10);
+  for (int i = 0; i < 3; ++i) _MedianFilter_OpenCV(ptrImage);
 }
 
 /**
 * @param image The image obtain from the bottom camera.
-* @param color_r The depth of red element in expected color. It ranges
-*                from 0 to 255.
-* @param color_g The depth of green element in expected color. It ranges
-*                from 0 to 255.
-* @param color_b The depth of blue element in expected color. It ranges
-*                from 0 to 255.
-* @param error The average tolerable error of the expected color.
+* @param channelValues The value of each channel in expected color.
+*                      Value of each channel ranges from 0 to 255.
+*                      The numbers of channels must match that of the
+*                      input image, otherwise memory leak may happen.
+* @param colorThreshold The average tolerable error of the expected
+*                       color.
+* @param gradientThreshold The gradient threshold for DDSelector
+*                          algorithm.
 * @param delta_px The error in pixel on x-axis of the screen. It is an
 *                 output parameter.
 * @param delta_py The error in pixel on y-axis of the screen. It is an
@@ -170,9 +211,109 @@ void _ProcessImage(IplImage** ptrImage)
 *    Find the colored object from the image obtain from the bottom
 *    camera of the AR.Drone.
 */
-bool _FindColoredObject(IplImage* image, int color_r, int color_g, int color_b, int error, int* delta_px, int* delta_py)
+bool _FindColoredObject(IplImage* image, int* channelValues, int colorThreshold, int gradientThreshold, int* delta_px, int* delta_py)
 {
-  return false;
+  int pixelGroupSize = image->width * image->height;
+  int* pixelGroup = new int[pixelGroupSize];
+  int currentGroup;
+  queue<int> toCheck;
+  bool isExpectedPixel;
+  int countGroupSize;
+  int maxGroupSize;
+  int tmpBlockTop, tmpBlockBottom, tmpBlockLeft, tmpBlockRight;
+
+
+  // Check if parameters are valid
+  for (int i = 0; i < image->nChannels; ++i)
+  {
+    if (channelValues[i]<0 || channelValues[i]>255) return false;
+  }
+
+  // Reset the pixel group
+  for (int i = 0; i < pixelGroupSize; ++i) pixelGroup[i] = -1;
+
+  // Check if the gradient threshold is valid
+  if (gradientThreshold < 0) return false;
+
+  // Loop check each pixel
+  currentGroup = 0;
+  maxGroupSize = 0;
+  for (int i = 0; i < pixelGroupSize; ++i)
+  {
+    // Check if the pixel is within expected range
+    isExpectedPixel = true;
+    for (int channel = 0; channel < image->nChannels; ++channel)
+    {
+      if ((uchar)(image->imageData[i * image->nChannels + channel]) < channelValues[channel] - colorThreshold ||
+        (uchar)(image->imageData[i * image->nChannels + channel]) > channelValues[channel] + colorThreshold)
+      {
+        isExpectedPixel = false;
+        break;
+      }
+    }
+    if (!isExpectedPixel) continue;
+
+    // Unprocessed pixel
+    countGroupSize = 0;
+    tmpBlockTop = image->height - 1;
+    tmpBlockBottom = 0;
+    tmpBlockLeft = image->width - 1;
+    tmpBlockRight = 0;
+    if (pixelGroup[i] < 0)
+    {
+      // Reset to-check queue and pixel queue
+      while (!toCheck.empty()) toCheck.pop();
+
+      // Push this pixel to the queue
+      toCheck.push(i);
+
+      // Assign group number to target pixel
+      pixelGroup[i] = currentGroup;
+
+      // Loop find the valid gradient diffuse pixels
+      while (!toCheck.empty())
+      {
+        int currentPixel = toCheck.front();
+
+        // Check the block boundary
+        int pixel_x = currentPixel % image->width;
+        int pixel_y = currentPixel / image->width;
+        if (pixel_x < tmpBlockLeft) tmpBlockLeft = pixel_x;
+        if (pixel_x > tmpBlockRight) tmpBlockRight = pixel_x;
+        if (pixel_y < tmpBlockTop) tmpBlockTop = pixel_y;
+        if (pixel_y > tmpBlockBottom) tmpBlockBottom = pixel_y;
+
+        // Add up the pixel count
+        ++countGroupSize;
+
+        // Check the neighbour pixels of to-check queue front
+        _CheckNeighbourPixels(image, pixelGroup, currentGroup, currentPixel, toCheck, gradientThreshold);
+
+        // Pop the processed pixel from the to-check queue
+        toCheck.pop();
+      }
+
+      // Check if it is the largest block
+      if (countGroupSize > maxGroupSize)
+      {
+        // Set the max group size
+        maxGroupSize = countGroupSize;
+
+        // Set the location of the block referred to the screen center
+        (*delta_px) = (tmpBlockLeft + tmpBlockRight - image->width) / 2;
+        (*delta_py) = (tmpBlockTop + tmpBlockBottom - image->height) / 2;
+      }
+
+      // Move to the next pixel group
+      ++currentGroup;
+    }
+  }
+
+  // Release resources
+  delete pixelGroup;
+
+  // Check block exist
+  return (maxGroupSize > 100);
 }
 
 /**
@@ -200,17 +341,17 @@ void _MedianFilter(IplImage** ptrImage)
     // Put the block to the processing array
     for (int i = 0; i < 3; ++i) {
       for (int j = 0; j < image->nChannels; ++j) {
-        arr[i][j] = (image->imageData)[(currentBlock - image->width - 1 + i) * 3 + j];
+        arr[i][j] = (uchar)(image->imageData[(currentBlock - image->width - 1 + i) * 3 + j]);
       }
     }
     for (int i = 0; i < 3; ++i) {
       for (int j = 0; j < image->nChannels; ++j) {
-        arr[i + 3][j] = (image->imageData)[(currentBlock - 1 + i) * 3 + j];
+        arr[i + 3][j] = (uchar)(image->imageData[(currentBlock - 1 + i) * 3 + j]);
       }
     }
     for (int i = 0; i < 3; ++i) {
       for (int j = 0; j < image->nChannels; ++j) {
-        arr[i + 6][j] = (image->imageData)[(currentBlock + image->width - 1 + i) * 3 + j];
+        arr[i + 6][j] = (uchar)(image->imageData[(currentBlock + image->width - 1 + i) * 3 + j]);
       }
     }
 
@@ -236,7 +377,10 @@ void _MedianFilter(IplImage** ptrImage)
     }
 
     // Median the block
-    for (int i = 0; i < 3; ++i)(image_dst->imageData)[currentBlock * 3 + i] = arr[5][i];
+    for (int i = 0; i < 3; ++i)
+    {
+      image_dst->imageData[currentBlock * 3 + i] = arr[5][i];
+    }
   }
 
   // Release the resources
@@ -268,108 +412,6 @@ void _MedianFilter_OpenCV(IplImage** ptrImage)
 
   // Reset the pointer
   (*ptrImage) = image_dst;
-}
-
-/**
-* @param ptrImage Pointer to the image being performed
-*                 gradient diffuse selection and pixel
-*                 equalization.
-* @param threshold Gradient threshold of the diffuse
-*                  process. Threshold plays the role as
-*                  an average pixel value, and it should
-*                  be non-negative number and its recommanded
-*                  upper boundary is 255.
-*
-* @brief
-*    Perform gradient diffuse selection algorithm on the
-*    input image and equalize the pixel values in each
-*    block.
-*/
-void _GradientDiffuseAndEqualize(IplImage** ptrImage, int threshold)
-{
-  IplImage* image = *ptrImage;
-  int pixelGroupSize = image->width * image->height;
-  int* pixelGroup = new int[pixelGroupSize];
-  int currentGroup;
-  queue<int> toCheck;
-  queue<int> currentGroupPixels;
-  int* sumChannelValue = new int[image->nChannels];
-  int* aveChannelValue = new int[image->nChannels];
-
-
-  // Reset the pixel group
-  for (int i = 0; i < pixelGroupSize; ++i) pixelGroup[i] = -1;
-
-  // Check if the threshold is valid
-  if (threshold < 0) return;
-
-  // Loop check each pixel
-  currentGroup = 0;
-  for (int i = 0; i < pixelGroupSize; ++i)
-  {
-    // Unprocessed pixel
-    if (pixelGroup[i] < 0)
-    {
-      // Reset to-check queue and pixel queue
-      while (!toCheck.empty()) toCheck.pop();
-      while (!currentGroupPixels.empty()) currentGroupPixels.pop();
-
-      // Reset pixel value sum
-      for (int channel = 0; channel < image->nChannels; ++channel) sumChannelValue[channel] = 0;
-
-      // Push this pixel to the queue
-      toCheck.push(i);
-
-      // Assign group number to target pixel
-      pixelGroup[i] = currentGroup;
-
-      // Loop find the valid gradient diffuse pixels
-      while (!toCheck.empty())
-      {
-        int currentPixel = toCheck.front();
-
-        // Push the pixel to current group pixels queue
-        currentGroupPixels.push(currentPixel);
-
-        // Sum up the pixel values
-        for (int channel = 0; channel < image->nChannels; ++channel)
-        {
-          sumChannelValue[channel] += (uchar)(image->imageData[currentPixel * 3 + channel]);
-        }
-
-        // Check the neighbour pixels of to-check queue front
-        _CheckNeighbourPixels(image, pixelGroup, currentGroup, currentPixel, toCheck, threshold);
-
-        // Pop the processed pixel from the to-check queue
-        toCheck.pop();
-      }
-
-      // Equalize pixel values of the current group
-      for (int channel = 0; channel < image->nChannels; ++channel)
-      {
-        aveChannelValue[channel] = sumChannelValue[channel] / currentGroupPixels.size();
-      }
-      while (!currentGroupPixels.empty())
-      {
-        // Set the pixel value
-        for (int channel = 0; channel < image->nChannels; ++channel)
-        {
-          image->imageData[currentGroupPixels.front() * 3 + channel] = aveChannelValue[channel];
-        }
-
-        // Pop the processed pixel
-        currentGroupPixels.pop();
-      }
-
-      // Move to the next pixel group
-      ++currentGroup;
-    }
-  }
-
-  // Release resources
-  delete pixelGroup;
-  delete sumChannelValue;
-  delete aveChannelValue;
 }
 
 /**
@@ -405,7 +447,7 @@ void _CheckNeighbourPixels(IplImage* image, int* pixelGroup, int currentGroup, i
     {
       for (int channel = 0; channel < image->nChannels; ++channel)
       {
-        if (abs(image->imageData[currentPixel * 3 + channel] - image->imageData[targetPixel * 3 + channel]) > threshold)
+        if (abs(((uchar)image->imageData[currentPixel * image->nChannels + channel]) - (uchar)(image->imageData[targetPixel * image->nChannels + channel])) > threshold)
         {
           validGradient = false;
           break;
@@ -438,7 +480,7 @@ void _CheckNeighbourPixels(IplImage* image, int* pixelGroup, int currentGroup, i
     {
       for (int channel = 0; channel < image->nChannels; ++channel)
       {
-        if (abs(image->imageData[currentPixel * 3 + channel] - image->imageData[targetPixel * 3 + channel]) > threshold)
+        if (abs((uchar)(image->imageData[currentPixel * image->nChannels + channel]) - (uchar)(image->imageData[targetPixel * image->nChannels + channel])) > threshold)
         {
           validGradient = false;
           break;
@@ -471,7 +513,7 @@ void _CheckNeighbourPixels(IplImage* image, int* pixelGroup, int currentGroup, i
     {
       for (int channel = 0; channel < image->nChannels; ++channel)
       {
-        if (abs(image->imageData[currentPixel * 3 + channel] - image->imageData[targetPixel * 3 + channel]) > threshold)
+        if (abs((uchar)(image->imageData[currentPixel * image->nChannels + channel]) - (uchar)(image->imageData[targetPixel * image->nChannels + channel])) > threshold)
         {
           validGradient = false;
           break;
@@ -504,7 +546,7 @@ void _CheckNeighbourPixels(IplImage* image, int* pixelGroup, int currentGroup, i
     {
       for (int channel = 0; channel < image->nChannels; ++channel)
       {
-        if (abs(image->imageData[currentPixel * 3 + channel] - image->imageData[targetPixel * 3 + channel]) > threshold)
+        if (abs((uchar)(image->imageData[currentPixel * image->nChannels + channel]) - (uchar)(image->imageData[targetPixel * image->nChannels + channel])) > threshold)
         {
           validGradient = false;
           break;
@@ -523,3 +565,63 @@ void _CheckNeighbourPixels(IplImage* image, int* pixelGroup, int currentGroup, i
     }
   }
 }
+
+/**
+* @param image The image to add a crosshair to.
+* @param x The coordinate in pixel referred to the left boundary.
+* @param y The coordinate in pixel referred to the right boundary.
+* @param size The size of the crosshair. It should be greater than 3.
+* @param color The color of the crosshair. It should match the number
+*              of channels of the image, otherwise memory leak may
+*              happen. Each element ranges from 0 to 255.
+*
+* @brief
+*    Draw a crosshair in specific location on a image.
+*/
+void _DrawCrosshair(IplImage* image, int x, int y, int size, int* color)
+{
+  int halfSize;
+  int leftBoundary, rightBoundary, topBoundary, bottomBoundary;
+
+  // Check the parameters
+  if (x<0 || x>image->width - 1) return;
+  if (y<0 || y>image->height - 1) return;
+  if (size < 3) return;
+
+  // Calculate the derived parameters
+  halfSize = (size - 1) / 2;
+  leftBoundary = x - halfSize;
+  rightBoundary = x + halfSize;
+  topBoundary = y - halfSize;
+  bottomBoundary = y + halfSize;
+
+  // Draw the horizontal line of the crosshair
+  for (int i = leftBoundary; i <= rightBoundary; ++i)
+  {
+    // Check image boundary
+    if (i >= 0 && i < image->width)
+    {
+      // Draw the valid pixels
+      for (int channel = 0; channel < image->nChannels; ++channel)
+      {
+        image->imageData[(y*image->width + i)*image->nChannels + channel] = color[channel];
+      }
+    }
+  }
+
+  // Draw the vertical line of the crosshair
+  for (int i = topBoundary; i <= bottomBoundary; ++i)
+  {
+    // Check image boundary
+    if (i >= 0 && i < image->height)
+    {
+      // Draw the valid pixels
+      for (int channel = 0; channel < image->nChannels; ++channel)
+      {
+        image->imageData[(i*image->width + x)*image->nChannels + channel] = color[channel];
+      }
+    }
+  }
+}
+
+#endif //_LOCATE_COLORED_OBJECT_HPP_
