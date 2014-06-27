@@ -1,4 +1,20 @@
 -----------------------------------------------------------------
+ David's CV Drone (= OpenCV + AR.Drone + Custom Functionalities)
+ Copyright (C) 2014 David Qiu
+ https://github.com/dvdape/cvdrone
+-----------------------------------------------------------------
+
+FUNCTIONALITIES
+  Some custom functionalities are appended to the CV Drone project 
+  and they are placed at /src/functionalities/ folder.
+    (1) LocateColoredObject.hpp: Manually finding a expected color 
+        block, and activating the auto locking function, the drone 
+        is expected to lock itself above the color block, and keeping 
+        it at the central screen. The core function of color block 
+        detection is designed by David Qiu (david@davidqiu.com).
+
+
+-----------------------------------------------------------------
  CV Drone (= OpenCV + AR.Drone)
  Copyright (C) 2013 puku0x
  https://github.com/puku0x/cvdrone
