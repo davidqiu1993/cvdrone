@@ -49,22 +49,27 @@ void _DrawCrosshair(IplImage* image, int x, int y, int size, int* color);
  */
 int LocateColoredObject(int argc, char **argv)
 {
-  const double DEFAULT_MOVE_SPEED = 1.0; // Default movement speed
+  const double DEFAULT_MOVE_SPEED = 0.6; // Default movement speed
 
   ARDrone ardrone; // AR.Drone entity
   IplImage *image = NULL; // Image obtain from the AR.Drone
   IplImage *image_process = NULL; // Image to process
 
-  float scale = 0.5;
-  int expectedColor[3] = { 50, 10, 0 };
-  int crosshairColor[3] = { 0, 0, 255 };
-  int crosshairSize = 11;
+  float scale = 0.5; // Scale of processed image
+  int expectedColor[3] = { 64, 20, 255 }; // Expected color of the block
+  int gradientThreshold = 10;
+  int colorThreshold = 30;
+  int crosshairColor[3] = { 255, 0, 0 }; // Color of the crosshair on the target
+  int crosshairSize = 11; // Size of the crosshair on the target
 
+  bool autoFindObjectFlag; // The flag indicating if auto find object and locate
   double vx, vy, vz, vr; // Expected movement speed vector
   int delta_px, delta_py; // Error vector of the colored object on bottom image
   long tick_time0, tick_time1; // Time on sampling the velocity vector
   double vel_x, vel_y, vel_z; // Velocity vector obtained from AR.Drone sensor
   double pos_x, pos_y, pos_z; // Position vector of the AR.Drone from the origin
+
+  bool blockFoundFlag;
 
   // Initialize
   if (!ardrone.open()) {
@@ -73,6 +78,7 @@ int LocateColoredObject(int argc, char **argv)
   }
   pos_x = 0; pos_y = 0; pos_z = 0;
   tick_time0 = clock();
+  autoFindObjectFlag = false;
 
   // Battery
   printf("Battery = %d%%\n", ardrone.getBatteryPercentage());
@@ -81,51 +87,41 @@ int LocateColoredObject(int argc, char **argv)
   ardrone.setCamera(1);
   
   // Instructions
-  printf("***************************************\n");
-  printf("*       CV Drone sample program       *\n");
-  printf("*           - How to Play -           *\n");
-  printf("***************************************\n");
-  printf("*                                     *\n");
-  printf("* - Controls -                        *\n");
-  printf("*    'Space' -- Takeoff/Landing       *\n");
-  printf("*    'Up'    -- Move forward          *\n");
-  printf("*    'Down'  -- Move backward         *\n");
-  printf("*    'Left'  -- Turn left             *\n");
-  printf("*    'Right' -- Turn right            *\n");
-  printf("*    'Q'     -- Move upward           *\n");
-  printf("*    'A'     -- Move downward         *\n");
-  printf("*                                     *\n");
-  printf("* - Others -                          *\n");
-  printf("*    'C'     -- Clear Position        *\n");
-  printf("*    'F'     -- Find Colored Object   *\n");
-  printf("*    'Esc'   -- Exit                  *\n");
-  printf("*                                     *\n");
-  printf("***************************************\n\n");
+  printf("*******************************************\n");
+  printf("*         CV Drone sample program         *\n");
+  printf("*             - How to Play -             *\n");
+  printf("*******************************************\n");
+  printf("*                                         *\n");
+  printf("* - Controls -                            *\n");
+  printf("*    'Space'     -- Takeoff/Landing       *\n");
+  printf("*    '¡ü' / 'W'  -- Move forward          *\n");
+  printf("*    '¡ý' / 'S'  -- Move backward         *\n");
+  printf("*    '¡û' / 'A'  -- Turn left             *\n");
+  printf("*    '¡ú' / 'D'  -- Turn right            *\n");
+  printf("*    'Q'         -- Yaw anticlockwise     *\n");
+  printf("*    'E'         -- Yaw clockwise         *\n");
+  printf("*    '+'         -- Move upward           *\n");
+  printf("*    '-'         -- Move downward         *\n");
+  printf("*                                         *\n");
+  printf("* - Others -                              *\n");
+  printf("*    'C'         -- Clear Position        *\n");
+  printf("*    'P'         -- Print Position        *\n");
+  printf("*    'F'         -- Find Colored Object   *\n");
+  printf("*    'G'         -- Give Up Operations    *\n");
+  printf("*    'Esc'       -- Exit                  *\n");
+  printf("*                                         *\n");
+  printf("*******************************************\n\n");
 
   while (1) {
     // Key input
-    int key = cvWaitKey(33);
+    int key = cvWaitKey(20);
     if (key == 0x1b) break;
 
     // Update
     if (!ardrone.update()) break;
 
-    // Get an new image
-    if (image != NULL) cvReleaseImage(&image);
-    image = cvCloneImage(ardrone.getImage());
-    if (image_process != NULL) cvReleaseImage(&image_process);
-    image_process = cvCreateImage(cvSize(image->width*scale, image->height*scale), image->depth, image->nChannels);
-    cvResize(image, image_process, CV_INTER_NN);
-
-    // Preprocess the image
-    _ProcessImage(&image_process);
-
-    // Find the colored object
-    if (_FindColoredObject(image_process, expectedColor, 10, 5, &delta_px, &delta_py))
-    {
-      printf("Block at (%d, %d)\n", delta_px, delta_py);
-      _DrawCrosshair(image_process, delta_px + image_process->width / 2, delta_py + image_process->height / 2, crosshairSize, crosshairColor);
-    }
+    // Reset the control vector
+    vx = 0; vy = 0; vz = 0; vr = 0;
 
     // Accumulate the position vector
     ardrone.getVelocity(&vel_x, &vel_y, &vel_z);
@@ -135,33 +131,88 @@ int LocateColoredObject(int argc, char **argv)
     pos_z += vel_z * ((double)(tick_time1 - tick_time0)) / (double)(CLOCKS_PER_SEC);
     tick_time0 = tick_time1;
 
-    // Print the position information of the drone
-    //printf("pos = (%lf, %lf, %lf)\n", pos_x, pos_y, pos_z);
+    // Inform the current position of the drone
+    if (key == 'p' || key=='P') printf("pos = (%lf, %lf, %lf)\n", pos_x, pos_y, pos_z);
+    
+    // Get an new image
+    if (image != NULL) cvReleaseImage(&image);
+    image = cvCloneImage(ardrone.getImage());
+    if (image_process != NULL) cvReleaseImage(&image_process);
+    image_process = cvCreateImage(cvSize(image->width*scale, image->height*scale), image->depth, image->nChannels);
+    cvResize(image, image_process, CV_INTER_NN);
 
-    // Take off / Landing 
-    if (key == ' ') {
+    
+    // Preprocess the image
+    _ProcessImage(&image_process);
+
+    // Find the colored object
+    if (_FindColoredObject(image_process, expectedColor, colorThreshold, gradientThreshold, &delta_px, &delta_py))
+    {
+      // Display the result
+      _DrawCrosshair(image_process, delta_px + image_process->width / 2, delta_py + image_process->height / 2, crosshairSize, crosshairColor);
+
+      // Inform the screen position of the block
+      //printf("Block on screen (%d, %d)\n", delta_px, delta_py);
+
+      // Set the control vector
+      if (autoFindObjectFlag)
+      {
+        // Locking above the block at center
+        if (abs(delta_px) > image_process->width / 3) vy = (delta_px < 0) ? DEFAULT_MOVE_SPEED : -DEFAULT_MOVE_SPEED;
+        if (abs(delta_py) > image_process->height / 3) vx = (delta_py < 0) ? DEFAULT_MOVE_SPEED : -DEFAULT_MOVE_SPEED;
+        
+        // Horizental up and down
+        //if (abs(delta_py) > image_process->height / 4) vz = (delta_py < 0) ? DEFAULT_MOVE_SPEED : -DEFAULT_MOVE_SPEED;
+        //vr = (delta_px < 0) ? DEFAULT_MOVE_SPEED : -DEFAULT_MOVE_SPEED;
+      }
+
+      // Check if block found at the central screen
+      if (!blockFoundFlag && abs(delta_px) < image_process->width / 4 && abs(delta_py) < image_process->height / 4)
+      {
+        // Set the flag
+        blockFoundFlag = true;
+
+        // Inform the position
+        printf("Block found at position (%lf, %lf)\n", pos_x, pos_y);
+      }
+    }
+    
+    // Command from keys
+    switch (key)
+    {
+    case ' ':
       if (ardrone.onGround()) ardrone.takeoff();
       else                    ardrone.landing();
-    }
+      break;
 
-    // Move
-    vx = 0; vy = 0; vz = 0; vr = 0;
-    if (key == 0x260000 || key == 'w') vx = DEFAULT_MOVE_SPEED;
-    if (key == 0x280000 || key == 's') vx = -DEFAULT_MOVE_SPEED;
-    if (key == 0x250000 || key == 'a') vy = DEFAULT_MOVE_SPEED;
-    if (key == 0x270000 || key == 'd') vy = -DEFAULT_MOVE_SPEED;
-    if (key == 'q')                    vr = DEFAULT_MOVE_SPEED;
-    if (key == 'e')                    vr = -DEFAULT_MOVE_SPEED;
-    if (key == '=')                    vz = DEFAULT_MOVE_SPEED;
-    if (key == '-')                    vz = -DEFAULT_MOVE_SPEED;
-    ardrone.move3D(vx, vy, vz, vr);
+    case 0x260000: case 'w': case 'W': vx = DEFAULT_MOVE_SPEED; break;
+    case 0x280000: case 's': case 'S': vx = -DEFAULT_MOVE_SPEED; break;
+    case 0x250000: case 'a': case 'A': vy = DEFAULT_MOVE_SPEED; break;
+    case 0x270000: case 'd': case 'D': vy = -DEFAULT_MOVE_SPEED; break;
+    case 'q': case 'Q':                vr = DEFAULT_MOVE_SPEED; break;
+    case 'e': case 'E':                vr = -DEFAULT_MOVE_SPEED; break;
+    case '=':                          vz = DEFAULT_MOVE_SPEED; break;
+    case '-':                          vz = -DEFAULT_MOVE_SPEED; break;
 
-    // Functional commands
-    if (key == 'c') {
+    case 'c': case 'C':
       pos_x = 0;
       pos_y = 0;
       pos_z = 0;
+      break;
+
+    case 'f': case 'F':
+      autoFindObjectFlag = true;
+      printf("Auto Find Object: Enabled.\n");
+      break;
+
+    case 'g': case 'G':
+      autoFindObjectFlag = false;
+      printf("Auto Find Object: Disabled.\n");
+      break;
     }
+    
+    // Move
+    ardrone.move3D(vx, vy, vz, vr);
 
     // Display the image
     cvShowImage("camera", image_process);
@@ -187,7 +238,7 @@ void _ProcessImage(IplImage** ptrImage)
 {
   // Remove the noise from the image
   //_MedianFilter(ptrImage);
-  for (int i = 0; i < 3; ++i) _MedianFilter_OpenCV(ptrImage);
+  for (int i = 0; i < 1; ++i) _MedianFilter_OpenCV(ptrImage);
 }
 
 /**
